@@ -24,10 +24,10 @@ class Capture(object):
         self.countdown = 0
         # calculate preview size
         r = pygame.Rect((0,0), self.resolution)
-        c = pygame.Rect((0,0), (self.camera_size[1], self.camera_size[0]))
+        c = pygame.Rect((0,0), (self.camera_size[1]*len(self.cams), self.camera_size[0]))
         s = c.fit(r)
-        self.preview_size = s.size
-        self.font = pygame.font.Font(pygame.font.get_default_font())
+        self.preview_size = (s.size[0] / len(self.cams), s.size[1])
+        self.font = pygame.font.Font(pygame.font.get_default_font(),72)
     def start_cams(self, size):
         #self.clist = pygame.camera.list_cameras()
         self.clist = ["/dev/video3", "/dev/video0", "/dev/video1"]  
@@ -48,8 +48,7 @@ class Capture(object):
         # if the camera has an image ready.  note that while this works
         # on most cameras, some will never return true.
         for i,cam in enumerate(self.cams):
-            if cam.query_image():
-                cam.get_image(self.snapshots[i])
+            cam.get_image(self.snapshots[i])
     
     def draw(self):
         for i in range(len(self.snapshots)):
@@ -69,15 +68,16 @@ class Capture(object):
         r = pygame.Rect((0,0), self.resolution)
         c = pygame.Rect((0,0), self.stitch.get_size())
         s = c.fit(r)
-        print(s)
         self.display.blit(pygame.transform.scale(self.stitch, s.size), (0,0))
         pygame.display.flip()
         pygame.time.wait(5000)
 
     def main(self):
         going = True
+        whiteScreen=False
         while going:
             self.update_cams()
+            self.draw()
             events = pygame.event.get()
             for e in events:
                 if e.type == QUIT or (e.type == KEYDOWN and e.key == K_ESCAPE):
@@ -88,23 +88,28 @@ class Capture(object):
                 elif e.type == KEYDOWN and e.key == K_SPACE and self.countdown == 0:
                     self.countdown = 3
                     pygame.time.set_timer(USEREVENT+1, 1000)
-                    print "{} !".format(self.countdown)
+                    text = self.font.render("{}".format(self.countdown), True, (255, 255, 255))
                 elif e.type == USEREVENT+1:
                     if self.countdown > 1:
                         self.countdown -= 1
                         text = self.font.render("{}".format(self.countdown), True, (255, 255, 255))
-                        self.display.blit(text, (
-                                self.resolution[0] - text.get_width() // 2,
-                                self.resolution[1] - text.get_height() // 2
-                        ))
                     else:
                         self.countdown = 0
                         pygame.time.set_timer(USEREVENT+1, 0)
-                        self.display.fill(pygame.Color(255,255,255,255))
-                        pygame.display.flip()
-                        self.do_capture()
-                        self.draw_stitch()
-            self.draw()
+                        whiteScreen=True
+                        pygame.time.set_timer(USEREVENT+2, 800)
+                elif e.type==USEREVENT+2:
+                    pygame.time.set_timer(USEREVENT+2,0)
+                    self.do_capture()
+                    self.draw_stitch()
+                    whiteScreen=False
+            if self.countdown != 0:
+                self.display.blit(text, (
+                    self.resolution[0] // 2 - text.get_width() // 2,
+                    self.resolution[1] // 2 - text.get_height() // 2
+                ))
+            if whiteScreen==True:
+                self.display.fill(pygame.Color(255,255,255,255))
             pygame.display.flip()
 
 
