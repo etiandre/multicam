@@ -5,23 +5,30 @@ import pygame.camera
 from pygame.locals import *
 import time
 import subprocess
+from threading import Thread, Event
+import serial
 
 pygame.init()
 pygame.camera.init()
 
 
 class Capture(object):
-    def __init__(self):
-        self.camera_size = (2304, 1536)
-        #self.camera_size = (1920, 1080)
+    def __init__(self, no_video = False):
+        #self.camera_size = (2304, 1536)
+        self.camera_size = (1920, 1080)
         self.resolution = (1920, 1080)
         self.img_path = "img/"
+        self.no_video = no_video
+        self.snd_beep = pygame.mixer.Sound("beep.wav")
+        self.snd_snap = pygame.mixer.Sound("snap.wav")
+
         self.start_cams(self.camera_size)
         # setup display
-        self.display = pygame.display.set_mode(self.resolution, 0)
+        if not self.no_video:
+            self.display = pygame.display.set_mode(self.resolution, 0)
         # create a surface to capture to.  for performance purposes
         # bit depth is the same as that of the display surface.
-        self.snapshots = [pygame.surface.Surface(self.camera_size, 0, self.display)
+        self.snapshots = [pygame.surface.Surface(self.camera_size, 0, 32)
                          for i in self.cams]
         countdown = 0
         # calculate preview size
@@ -50,6 +57,7 @@ class Capture(object):
             cam.get_image(self.snapshots[i])
 
     def draw(self):
+        if self.no_video: return
         for i in range(len(self.snapshots)):
             img = pygame.transform.flip(pygame.transform.rotate(self.snapshots[i], 270), True, False)
             self.display.blit(pygame.transform.scale(img, self.preview_size), (self.preview_size[0]*i, 0))
@@ -57,11 +65,12 @@ class Capture(object):
     def do_capture(self):
         t = time.strftime("%d%m%y-%H%M%S")
         for i in range(len(self.snapshots)):
-            pygame.image.save(pygame.transform.rotate(self.snapshots[i], 270), self.img_path+"IMG-{}-{}.jpg".format(t, i))
+            pygame.image.save(pygame.transform.rotate(self.snapshots[i], 270), self.img_path+"IMG-{}-{}-{}.jpg".format(t, self.badgereader.id, i))
             # subprocess.call(["cp", "{}.jpg".format(i), self.img_path+"IMG-{}-{}.jpg".format(t, i)])
         print("Picture taken at {}".format(t))
 
     def draw_stitch(self):
+        if self.no_video: return
         subprocess.call(["nona", "-m", "JPEG", "-o", "out", "params.pto"])
         self.stitch = pygame.image.load("out.jpg")
         r = pygame.Rect((0,0), self.resolution)
@@ -71,6 +80,7 @@ class Capture(object):
         pygame.display.flip()
         pygame.time.wait(5000)
     def display_text(self, text, color=pygame.Color(0,0,0,255)):
+        if self.no_video: return
         text = self.font.render("{}".format(text), True, (255, 255, 255))
         self.display.fill(color)
         self.display.blit(text, (
@@ -80,21 +90,34 @@ class Capture(object):
         pygame.display.flip()
     def main(self):
         going = True
-        whiteScreen=False
         countdown = 0
         state = "waiting"
+        self.badgereader = BadgeReader()
+        self.badgereader.start()
+        print("Ready")
         while going:
             self.update_cams()
+            if self.badgereader.id != "" and self.badgereader.ready.is_set() and state == "waiting":
+                print("putting keydown event in queue")
+                e = pygame.event.Event(KEYDOWN, {"key": K_SPACE}) # add key event
+                pygame.event.post(e)
+                self.badgereader.ready.set() # block badge input
             events = pygame.event.get()
             for e in events:
+                print(e)
                 if e.type == QUIT or (e.type == KEYDOWN and e.key == K_ESCAPE):
                     # close the camera safely
+                    self.badgereader.running = False
                     for cam in self.cams:
                         cam.stop()
                     going = False
+                    print("Waiting for badgereader thread...")
+                    self.badgereader.join()
+                    exit()
                 elif e.type == KEYDOWN and e.key == K_SPACE and state == "waiting":
                     state="counting"
-                    countdown = 3
+                    countdown = 5
+                    self.snd_beep.play()
                     pygame.time.set_timer(USEREVENT+1, 1000)
                     self.display_text(countdown)
                     print(countdown)
@@ -103,21 +126,57 @@ class Capture(object):
                         countdown -= 1
                         print(countdown)
                         self.display_text(countdown)
+                        if countdown == 1:
+                            self.snd_beep.play(loops=-1)
+                        else:
+                            self.snd_beep.play()
                     else: # countdown == 0
                         pygame.time.set_timer(USEREVENT+1, 0)
+                        self.snd_beep.stop()
+                        self.snd_snap.play()
                         state="shooting"
                         pygame.time.set_timer(USEREVENT+2, 800)
                 elif e.type==USEREVENT+2:
                     pygame.time.set_timer(USEREVENT+2,0)
                     self.do_capture()
                     state="waiting"
+                    self.badgereader.id = ""
+                    self.badgereader.ready.clear() # release badge input
             if state=="shooting":
-                self.display.fill(pygame.Color(255,255,255,255))
-                self.display_text("clic!", pygame.Color(0,0,0,255))
-                pygame.display.flip()
+                if not self.no_video:
+                    self.display.fill(pygame.Color(255,255,255,255))
+                    self.display_text("clic!", pygame.Color(0,0,0,255))
+                    pygame.display.flip()
             elif state=="waiting":
                 self.display_text("badge pr prendr 1 foto ^^^^")
 
+class BadgeReader(Thread):
+    def __init__(self):
+        Thread.__init__(self)
+        self.f = serial.Serial("/dev/ttyUSB0")
+        self.id = ""
+        self.ready = Event()
+        self.ready.clear()
+        self.running = True
+    def run(self):
+        while self.running:
+            if self.f.in_waiting == 0 or self.ready.is_set():
+                continue
+            self.ready.set()
+            id = self.f.readline() # blocking
+            if not self.running:
+                return
+            id = id.strip() # remove \r\n
+            print("badgereader : read {}".format(id))
+            self.id = id
+
 if __name__ == "__main__":
-    cap = Capture()
-    cap.main()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "novideo":
+        print("launching without video")
+        cap = Capture(no_video = True)
+        cap.main()
+    else:
+        cap = Capture()
+        cap.main()
