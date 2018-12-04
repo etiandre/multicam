@@ -8,3 +8,4 @@ for i in img/*.pto; do
   nona -o temp $i
   enblend temp*.tif -o "stitch/$(basename $i | sed s/.pto//g).jpg"
 done
+rm -f temp*.tif
